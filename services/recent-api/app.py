@@ -51,7 +51,7 @@ def recent():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"ok": True, "service": "recent-api","version","ci-cd-test-1"})
+    return jsonify({"ok": True, "service": "recent-api","version":"ci-cd-test-1"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8001)
