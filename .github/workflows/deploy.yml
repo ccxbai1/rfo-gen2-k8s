@@ -1,0 +1,81 @@
+name: Deploy to EKS
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+  EKS_CLUSTER_NAME: rfo-gen2
+  K8S_NAMESPACE: rfo
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        run: |
+          aws ecr get-login-password --region "$AWS_REGION" | \
+          docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+      - name: Build Docker images
+        run: |
+          docker build -t rfo-submit ./services/submit-api
+          docker build -t rfo-worker ./services/worker
+          docker build -t rfo-recent ./services/recent-api
+
+      - name: Tag images
+        run: |
+          docker tag rfo-submit "$ECR_REGISTRY/rfo-submit:latest"
+          docker tag rfo-worker "$ECR_REGISTRY/rfo-worker:latest"
+          docker tag rfo-recent "$ECR_REGISTRY/rfo-recent:latest"
+
+      - name: Push images
+        run: |
+          docker push "$ECR_REGISTRY/rfo-submit:latest"
+          docker push "$ECR_REGISTRY/rfo-worker:latest"
+          docker push "$ECR_REGISTRY/rfo-recent:latest"
+
+      - name: Install kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/kubectl
+          kubectl version --client
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
+
+      - name: Restart deployments
+        run: |
+          kubectl rollout restart deployment/submit-api -n "$K8S_NAMESPACE"
+          kubectl rollout restart deployment/worker -n "$K8S_NAMESPACE"
+          kubectl rollout restart deployment/recent-api -n "$K8S_NAMESPACE"
+
+      - name: Wait for rollouts
+        run: |
+          kubectl rollout status deployment/submit-api -n "$K8S_NAMESPACE" --timeout=300s
+          kubectl rollout status deployment/worker -n "$K8S_NAMESPACE" --timeout=300s
+          kubectl rollout status deployment/recent-api -n "$K8S_NAMESPACE" --timeout=300s
+
+      - name: Show deployed pods
+        run: |
+          kubectl get pods -n "$K8S_NAMESPACE"
